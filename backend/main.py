@@ -1,0 +1,1 @@
+print("ClinIQ backend is alive!")
