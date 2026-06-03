@@ -14,9 +14,24 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [hasDocuments, setHasDocuments] = useState<boolean | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+  // Check if any documents are uploaded
+  useEffect(() => {
+    const checkDocuments = async () => {
+      try {
+        const res = await fetch(`${API_URL}/health`);
+        const data = await res.json();
+        setHasDocuments(data.documents_loaded > 0);
+      } catch {
+        setHasDocuments(false);
+      }
+    };
+    checkDocuments();
+  }, [API_URL]);
 
   // Auto-scroll to bottom when new messages appear
   useEffect(() => {
@@ -29,7 +44,6 @@ export default function ChatPage() {
 
     setInput("");
 
-    // Add user message
     setMessages((prev) => [...prev, { role: "user", content: question }]);
     setLoading(true);
 
@@ -59,7 +73,8 @@ export default function ChatPage() {
         ...prev,
         {
           role: "assistant",
-          content: "Sorry, something went wrong. Please try again.",
+          content:
+            "Sorry, something went wrong. Make sure the backend is running and try again.",
         },
       ]);
     } finally {
@@ -72,31 +87,43 @@ export default function ChatPage() {
     "List the inclusion criteria",
     "How is the study drug administered?",
     "What adverse events are monitored?",
+    "What is the sample size?",
   ];
 
   return (
     <main className="min-h-screen bg-gray-50 flex flex-col">
       {/* Nav */}
       <nav className="border-b bg-white px-6 py-4 flex justify-between items-center">
-        <a href="/" className="text-xl font-bold text-blue-700">
-          ClinIQ
-        </a>
+        <a href="/" className="text-xl font-bold text-blue-700">ClinIQ</a>
         <a href="/upload" className="text-sm text-blue-600 hover:underline">
           Upload New Document
         </a>
       </nav>
 
+      {/* No Documents Warning */}
+      {hasDocuments === false && (
+        <div className="max-w-3xl mx-auto w-full px-6 mt-8">
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+            <p className="text-yellow-800 font-medium mb-1">No documents uploaded yet</p>
+            <p className="text-yellow-700 text-sm">
+              You need to upload a clinical trial document before asking questions.{" "}
+              <a href="/upload" className="underline font-medium">
+                Upload a document →
+              </a>
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Chat Messages */}
       <div className="flex-1 overflow-y-auto px-6 py-8 max-w-3xl mx-auto w-full">
         {/* Starter questions when no messages */}
-        {messages.length === 0 && (
+        {messages.length === 0 && hasDocuments !== false && (
           <div className="text-center mt-20">
             <p className="text-lg text-gray-400 mb-2">
               Ask a question about your document
             </p>
-            <p className="text-sm text-gray-400 mb-6">
-              Or try one of these:
-            </p>
+            <p className="text-sm text-gray-400 mb-6">Or try one of these:</p>
             <div className="flex flex-wrap justify-center gap-3">
               {starterQuestions.map((q) => (
                 <button
@@ -117,7 +144,6 @@ export default function ChatPage() {
             key={i}
             className={`mb-6 ${msg.role === "user" ? "text-right" : ""}`}
           >
-            {/* Message bubble */}
             <div
               className={`inline-block max-w-[85%] p-4 rounded-xl ${
                 msg.role === "user"
@@ -128,7 +154,7 @@ export default function ChatPage() {
               <p className="whitespace-pre-wrap">{msg.content}</p>
             </div>
 
-            {/* Citation badges (for assistant messages) */}
+            {/* Citation badges */}
             {msg.role === "assistant" && msg.pages && msg.pages.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-2">
                 {msg.pages.map((p) => (
@@ -165,18 +191,28 @@ export default function ChatPage() {
           </div>
         ))}
 
-        {/* Loading indicator */}
+        {/* Loading */}
         {loading && (
           <div className="mb-6">
             <div className="inline-block bg-white border border-gray-200 p-4 rounded-xl rounded-bl-sm">
-              <p className="text-gray-400">
-                Searching document and generating answer...
-              </p>
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" />
+                <div
+                  className="w-2 h-2 bg-blue-400 rounded-full animate-bounce"
+                  style={{ animationDelay: "0.1s" }}
+                />
+                <div
+                  className="w-2 h-2 bg-blue-400 rounded-full animate-bounce"
+                  style={{ animationDelay: "0.2s" }}
+                />
+                <p className="text-gray-400 ml-2">
+                  Searching document and generating answer...
+                </p>
+              </div>
             </div>
           </div>
         )}
 
-        {/* Auto-scroll anchor */}
         <div ref={bottomRef} />
       </div>
 
@@ -189,11 +225,12 @@ export default function ChatPage() {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSend()}
             placeholder="Ask a question about your document..."
-            className="flex-1 border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            disabled={hasDocuments === false}
+            className="flex-1 border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-400"
           />
           <button
             onClick={() => handleSend()}
-            disabled={loading || !input.trim()}
+            disabled={loading || !input.trim() || hasDocuments === false}
             className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 disabled:bg-blue-300 transition"
           >
             Ask
