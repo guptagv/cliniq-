@@ -1,16 +1,13 @@
 """
-ClinIQ - Improved RAG Engine
-Replace your existing rag_engine.py with this file.
-
-Key improvements:
-1. Retrieves more chunks (6 instead of 4) for better coverage
-2. Uses section metadata in the context (Claude knows WHERE info came from)
-3. Better system prompt tuned for clinical/regulatory documents
-4. Filters out low-relevance chunks using similarity score threshold
-5. Returns section info alongside page numbers
+ClinIQ - RAG Engine v3
+Improvements:
+- Better system prompt for clinical documents
+- Follow-up question suggestions
+- Handles abbreviations and tables
 """
 
 import os
+import re
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import Chroma
@@ -19,12 +16,6 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 load_dotenv()
 
 embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-
-# ──────────────────────────────────────────────
-# SYSTEM PROMPT
-# This is the single most important thing for
-# answer quality. Tune this as you test.
-# ──────────────────────────────────────────────
 
 SYSTEM_PROMPT = """You are ClinIQ, an expert AI assistant for clinical trial documents.
 You help pharma professionals — medical writers, biostatisticians, clinical scientists —
@@ -42,34 +33,36 @@ Rules you MUST follow:
 7. For endpoints, distinguish clearly between primary, secondary, and exploratory.
 8. If the question is ambiguous, answer the most likely interpretation and
    briefly note other possible interpretations.
+9. If an abbreviation is used in the context, spell it out on first use.
+   Example: "OS (Overall Survival)"
+10. If the context contains tabular data, present it in a structured format.
+11. Present all information found in the context completely.
+    Do not add warnings about potentially missing information
+    unless the context explicitly references content not provided.
+
+After your answer, suggest 2-3 follow-up questions the user might want to ask
+based on what you found in the context. Format them exactly like this:
+
+FOLLOW_UP_QUESTIONS:
+1. [question]
+2. [question]
+3. [question]
 """
 
 
-def query_documents(question, collection_name="cliniq_docs", top_k=6, score_threshold=1.5):
+def query_documents(question, collection_name="cliniq_docs", top_k=10, score_threshold=1.5):
     """
-    Query the vector store and get an AI-powered answer.
-
-    Args:
-        question: The user's question in plain English
-        collection_name: Which ChromaDB collection to search
-        top_k: Number of chunks to retrieve (6 gives good coverage)
-        score_threshold: Max distance score to accept (lower = more relevant)
-                        ChromaDB uses L2 distance, so lower is better.
-                        1.5 is a reasonable cutoff. Increase if getting too few results.
+    Query the vector store and get an AI-powered answer with follow-ups.
     """
 
-    # Load existing vector store
     vectorstore = Chroma(
         collection_name=collection_name,
         embedding_function=embeddings,
         persist_directory="./chroma_db"
     )
 
-    # Find relevant chunks WITH similarity scores
     results = vectorstore.similarity_search_with_score(question, k=top_k)
 
-    # Filter out low-relevance chunks
-    # (ChromaDB L2 distance: 0 = identical, higher = less relevant)
     filtered_results = [
         (doc, score) for doc, score in results
         if score <= score_threshold
@@ -81,10 +74,11 @@ def query_documents(question, collection_name="cliniq_docs", top_k=6, score_thre
             "pages_cited": [],
             "sections_cited": [],
             "chunks_used": 0,
-            "confidence": "low"
+            "confidence": "low",
+            "follow_up_questions": []
         }
 
-    # Build context with page numbers AND section names
+    # Build context
     context_parts = []
     pages_cited = set()
     sections_cited = set()
@@ -101,7 +95,7 @@ def query_documents(question, collection_name="cliniq_docs", top_k=6, score_thre
 
     context = "\n\n---\n\n".join(context_parts)
 
-    # Determine confidence based on how many good chunks we found
+    # Confidence
     if len(filtered_results) >= 4:
         confidence = "high"
     elif len(filtered_results) >= 2:
@@ -109,11 +103,11 @@ def query_documents(question, collection_name="cliniq_docs", top_k=6, score_thre
     else:
         confidence = "low"
 
-    # Ask Claude with enriched context
+    # Call Claude
     llm = ChatAnthropic(
-        model="claude-sonnet-4-6",  # Change to claude-opus-4-7 if you want premium
-        temperature=0,              # 0 = deterministic, no creativity
-        max_tokens=2048,            # Allow longer answers for detailed questions
+        model="claude-sonnet-4-6",
+        temperature=0,
+        max_tokens=2048,
     )
 
     prompt = f"""{SYSTEM_PROMPT}
@@ -124,25 +118,39 @@ def query_documents(question, collection_name="cliniq_docs", top_k=6, score_thre
 
 Question: {question}
 
-Provide a thorough answer with page and section citations."""
+Provide a thorough answer with page and section citations, then suggest follow-up questions."""
 
     response = llm.invoke(prompt)
+    full_answer = response.content
+
+    # Parse follow-up questions from the response
+    follow_ups = []
+    answer_text = full_answer
+
+    if "FOLLOW_UP_QUESTIONS:" in full_answer:
+        parts = full_answer.split("FOLLOW_UP_QUESTIONS:")
+        answer_text = parts[0].strip()
+        follow_up_text = parts[1].strip()
+
+        # Extract numbered questions
+        for line in follow_up_text.split("\n"):
+            line = line.strip()
+            # Match lines like "1. What is..." or "2. How does..."
+            match = re.match(r'^\d+\.\s*(.+)', line)
+            if match:
+                follow_ups.append(match.group(1).strip())
 
     return {
-        "answer": response.content,
+        "answer": answer_text,
         "pages_cited": sorted(pages_cited),
         "sections_cited": sorted(sections_cited),
         "chunks_used": len(filtered_results),
-        "confidence": confidence
+        "confidence": confidence,
+        "follow_up_questions": follow_ups[:3]  # Max 3
     }
 
 
-# ──────────────────────────────────────────────
-# TEST IT
-# ──────────────────────────────────────────────
-
 if __name__ == "__main__":
-    # Test with several types of questions
     test_questions = [
         "What is the primary endpoint of this study?",
         "What are the inclusion criteria?",
@@ -150,9 +158,9 @@ if __name__ == "__main__":
     ]
 
     for question in test_questions:
-        print(f"\n{'=' * 60}")
+        print(f"\n{'='*60}")
         print(f"Q: {question}")
-        print(f"{'=' * 60}")
+        print(f"{'='*60}")
 
         result = query_documents(question)
 
@@ -160,4 +168,8 @@ if __name__ == "__main__":
         print(f"\nPages cited: {result['pages_cited']}")
         print(f"Sections: {result['sections_cited']}")
         print(f"Confidence: {result['confidence']}")
-        print(f"Chunks used: {result['chunks_used']}")
+
+        if result["follow_up_questions"]:
+            print(f"\nSuggested follow-ups:")
+            for i, q in enumerate(result["follow_up_questions"], 1):
+                print(f"  {i}. {q}")

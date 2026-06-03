@@ -1,0 +1,77 @@
+[
+  {
+    "question": "What is the primary endpoint of this study?",
+    "confidence": "high",
+    "pages_cited": [
+      13,
+      32
+    ],
+    "sections_cited": [
+      "General",
+      "Study Design"
+    ],
+    "chunks_used": 6,
+    "time_seconds": 9.4,
+    "answer_length": 1703
+  },
+  {
+    "question": "What are the inclusion criteria?",
+    "confidence": "high",
+    "pages_cited": [
+      3,
+      34
+    ],
+    "sections_cited": [
+      "Safety",
+      "Study Population"
+    ],
+    "chunks_used": 6,
+    "time_seconds": 8.4,
+    "answer_length": 1319
+  },
+  {
+    "question": "What is the study drug and how is it administered?",
+    "confidence": "high",
+    "pages_cited": [
+      22,
+      23,
+      31
+    ],
+    "sections_cited": [
+      "Study Design"
+    ],
+    "chunks_used": 6,
+    "time_seconds": 11.7,
+    "answer_length": 1576
+  },
+  {
+    "question": "What is the sample size and how was it calculated?",
+    "confidence": "high",
+    "pages_cited": [
+      32,
+      66
+    ],
+    "sections_cited": [
+      "Safety",
+      "Study Design"
+    ],
+    "chunks_used": 6,
+    "time_seconds": 10.7,
+    "answer_length": 1973
+  },
+  {
+    "question": "What safety monitoring is in place?",
+    "confidence": "high",
+    "pages_cited": [
+      4,
+      68
+    ],
+    "sections_cited": [
+      "Adverse Events",
+      "Safety"
+    ],
+    "chunks_used": 6,
+    "time_seconds": 9.9,
+    "answer_length": 1622
+  }
+]
