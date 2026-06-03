@@ -173,3 +173,127 @@ if __name__ == "__main__":
             print(f"\nSuggested follow-ups:")
             for i, q in enumerate(result["follow_up_questions"], 1):
                 print(f"  {i}. {q}")
+def query_all_documents(question, top_k=10, score_threshold=1.5):
+    """Query across ALL uploaded documents and synthesize."""
+    import chromadb
+
+    client = chromadb.PersistentClient(path="./chroma_db")
+    collections = client.list_collections()
+
+    if not collections:
+        return {
+            "answer": "No documents uploaded yet.",
+            "pages_cited": [],
+            "sections_cited": [],
+            "chunks_used": 0,
+            "confidence": "low",
+            "follow_up_questions": [],
+            "documents_searched": []
+        }
+
+    # Search across all collections
+    all_results = []
+    docs_searched = []
+
+    for collection in collections:
+        vectorstore = Chroma(
+            collection_name=collection.name,
+            embedding_function=embeddings,
+            persist_directory="./chroma_db"
+        )
+        results = vectorstore.similarity_search_with_score(question, k=top_k // len(collections) + 1)
+        for doc, score in results:
+            if score <= score_threshold:
+                doc.metadata["source_collection"] = collection.name
+                all_results.append((doc, score))
+        docs_searched.append(collection.name)
+
+    # Sort by relevance (lower score = more relevant)
+    all_results.sort(key=lambda x: x[1])
+    all_results = all_results[:top_k]
+
+    if not all_results:
+        return {
+            "answer": "I couldn't find relevant information across any uploaded documents.",
+            "pages_cited": [],
+            "sections_cited": [],
+            "chunks_used": 0,
+            "confidence": "low",
+            "follow_up_questions": [],
+            "documents_searched": docs_searched
+        }
+
+    # Build context with document source
+    context_parts = []
+    pages_cited = set()
+    sections_cited = set()
+
+    for doc, score in all_results:
+        page_num = doc.metadata.get("page_number", "?")
+        section = doc.metadata.get("section", "General")
+        source = doc.metadata.get("source_collection", "unknown")
+        pages_cited.add(page_num)
+        sections_cited.add(section)
+
+        context_parts.append(
+            f"[Document: {source} | Page {page_num} | Section: {section}]:\n{doc.page_content}"
+        )
+
+    context = "\n\n---\n\n".join(context_parts)
+
+    confidence = "high" if len(all_results) >= 4 else "medium" if len(all_results) >= 2 else "low"
+
+    llm = ChatAnthropic(
+        model="claude-sonnet-4-6",
+        temperature=0,
+        max_tokens=2048,
+    )
+
+    cross_doc_prompt = """You are ClinIQ, an expert AI assistant for clinical trial documents.
+The context below comes from MULTIPLE documents.
+For each fact, cite the document name, page number, and section.
+Format citations as: (Document: name, Page X, Section Name)
+If comparing across documents, clearly indicate which information comes from which document.
+
+After your answer, suggest 2-3 follow-up questions.
+Format them exactly like this:
+
+FOLLOW_UP_QUESTIONS:
+1. [question]
+2. [question]
+3. [question]
+"""
+
+    prompt = f"""{cross_doc_prompt}
+
+--- DOCUMENT CONTEXT ---
+{context}
+--- END CONTEXT ---
+
+Question: {question}
+
+Provide a thorough answer with document and page citations."""
+
+    response = llm.invoke(prompt)
+    full_answer = response.content
+
+    # Parse follow-ups
+    follow_ups = []
+    answer_text = full_answer
+    if "FOLLOW_UP_QUESTIONS:" in full_answer:
+        parts = full_answer.split("FOLLOW_UP_QUESTIONS:")
+        answer_text = parts[0].strip()
+        for line in parts[1].strip().split("\n"):
+            match = re.match(r'^\d+\.\s*(.+)', line.strip())
+            if match:
+                follow_ups.append(match.group(1).strip())
+
+    return {
+        "answer": answer_text,
+        "pages_cited": sorted(pages_cited),
+        "sections_cited": sorted(sections_cited),
+        "chunks_used": len(all_results),
+        "confidence": confidence,
+        "follow_up_questions": follow_ups[:3],
+        "documents_searched": docs_searched
+    }
