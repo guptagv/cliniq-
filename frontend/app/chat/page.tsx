@@ -16,6 +16,7 @@ interface Message {
 
 interface DocInfo {
   name: string;
+  display_name?: string;
   chunks: number;
 }
 
@@ -32,6 +33,9 @@ export default function ChatPage() {
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+  // User ID is the logged-in user's email
+  const userId = session?.user?.email || "anonymous";
+
   // Redirect if not logged in
   useEffect(() => {
     if (status === "unauthenticated") {
@@ -39,13 +43,16 @@ export default function ChatPage() {
     }
   }, [status, router]);
 
-  // Fetch available documents
+  // Fetch documents for THIS user
   useEffect(() => {
     if (status !== "authenticated") return;
 
     const fetchDocs = async () => {
       try {
-        const res = await fetch(`${API_URL}/documents`);
+        // Pass user_id as a query parameter
+        const res = await fetch(
+          `${API_URL}/documents?user_id=${encodeURIComponent(userId)}`
+        );
         const data = await res.json();
         setDocuments(data.documents || []);
         if (data.documents?.length > 0 && !selectedDoc) {
@@ -56,14 +63,13 @@ export default function ChatPage() {
       }
     };
     fetchDocs();
-  }, [API_URL, status]);
+  }, [API_URL, status, userId]);
 
-  // Auto-scroll to bottom when new messages appear
+  // Auto-scroll
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  // Show loading state while checking auth
   if (status === "loading") {
     return (
       <main className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -72,7 +78,6 @@ export default function ChatPage() {
     );
   }
 
-  // Don't render anything if not logged in
   if (!session) return null;
 
   const handleSend = async (overrideQuestion?: string) => {
@@ -92,6 +97,8 @@ export default function ChatPage() {
         body: JSON.stringify({
           question,
           collection_name: selectedDoc === "__all__" ? "" : selectedDoc,
+          // Pass user_id so backend knows which user is asking
+          user_id: userId,
         }),
       });
 
@@ -157,7 +164,7 @@ export default function ChatPage() {
               )}
               {documents.map((doc) => (
                 <option key={doc.name} value={doc.name}>
-                  {doc.name} ({doc.chunks} chunks)
+                  {doc.display_name || doc.name} ({doc.chunks} chunks)
                 </option>
               ))}
             </select>
@@ -169,7 +176,7 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* No Documents Warning */}
+      {/* No Documents */}
       {documents.length === 0 && (
         <div className="max-w-3xl mx-auto w-full px-6 mt-8">
           <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
@@ -177,10 +184,9 @@ export default function ChatPage() {
               No documents uploaded yet
             </p>
             <p className="text-yellow-700 text-sm">
-              You need to upload a clinical trial document before asking
-              questions.{" "}
+              You haven't uploaded any documents.{" "}
               <a href="/upload" className="underline font-medium">
-                Upload a document →
+                Upload your first document →
               </a>
             </p>
           </div>
@@ -294,7 +300,7 @@ export default function ChatPage() {
                 />
                 <p className="text-gray-400 ml-2">
                   {selectedDoc === "__all__"
-                    ? "Searching across all documents..."
+                    ? "Searching across all your documents..."
                     : "Searching document and generating answer..."}
                 </p>
               </div>

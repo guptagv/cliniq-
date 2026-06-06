@@ -25,7 +25,6 @@ export default function UploadPage() {
     }
   }, [status, router]);
 
-  // Show loading state while checking auth
   if (status === "loading") {
     return (
       <main className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -34,7 +33,6 @@ export default function UploadPage() {
     );
   }
 
-  // Don't render anything if not logged in (redirect is happening)
   if (!session) return null;
 
   const validateFile = (selectedFile: File): string | null => {
@@ -80,6 +78,8 @@ export default function UploadPage() {
     try {
       const formData = new FormData();
       formData.append("file", file);
+      // Send the logged-in user's email so backend can scope this doc to them
+      formData.append("user_id", session?.user?.email || "anonymous");
 
       const response = await fetch(`${API_URL}/upload`, {
         method: "POST",
@@ -137,9 +137,7 @@ export default function UploadPage() {
             handleFileSelect(droppedFile || null);
           }}
         >
-          <p className="text-gray-500 mb-4">
-            Drag and drop your PDF here, or
-          </p>
+          <p className="text-gray-500 mb-4">Drag and drop your PDF here, or</p>
           <label className="inline-block bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 cursor-pointer transition">
             Choose PDF File
             <input
@@ -170,7 +168,6 @@ export default function UploadPage() {
           )}
         </div>
 
-        {/* Error */}
         {error && (
           <div className="mt-6 p-4 bg-red-50 border border-red-200 text-red-700 rounded-lg">
             <p className="font-medium mb-1">Error</p>
@@ -178,7 +175,6 @@ export default function UploadPage() {
           </div>
         )}
 
-        {/* Success */}
         {result && (
           <div className="mt-6 p-6 bg-green-50 border border-green-200 rounded-lg">
             <h3 className="font-semibold text-green-800 mb-2">
