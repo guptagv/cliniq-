@@ -1,0 +1,17 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.local
+chroma_db/
+uploads/
+cache/
+sample_docs/
+.pytest_cache/
+.git/
+*.md
+test_*.py
+tune_*.py
+process_all_docs.py

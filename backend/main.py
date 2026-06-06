@@ -25,8 +25,8 @@ app = FastAPI(title="ClinIQ API", version="0.3.0")
 # CORS - only allow your frontend origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
+    allow_origins=["*"
+        #"http://localhost:3000",
         # Add your Vercel deployment URL here when you deploy:
         # "https://cliniq.vercel.app",
     ],
