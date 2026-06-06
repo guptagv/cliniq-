@@ -1,23 +1,33 @@
 """
-ClinIQ - RAG Engine v3
-Improvements:
-- Better system prompt for clinical documents
+ClinIQ - RAG Engine v4
+Complete rewrite with all fixes applied.
+
+Features:
+- Single document and cross-document queries
+- Section-aware citations (page + section)
 - Follow-up question suggestions
 - Handles abbreviations and tables
+- Skips empty/broken collections in cross-doc search
+- Uses langchain-chroma (not deprecated langchain_community)
 """
 
 import os
 import re
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
 load_dotenv()
 
 embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-SYSTEM_PROMPT = """You are ClinIQ, an expert AI assistant for clinical trial documents.
+
+# ──────────────────────────────────────────────
+# SYSTEM PROMPTS
+# ──────────────────────────────────────────────
+
+SINGLE_DOC_PROMPT = """You are ClinIQ, an expert AI assistant for clinical trial documents.
 You help pharma professionals — medical writers, biostatisticians, clinical scientists —
 find precise information in protocols, SAPs, CSRs, and regulatory documents.
 
@@ -49,28 +59,93 @@ FOLLOW_UP_QUESTIONS:
 3. [question]
 """
 
+CROSS_DOC_PROMPT = """You are ClinIQ, an expert AI assistant for clinical trial documents.
+The context below comes from MULTIPLE clinical trial documents.
+
+Rules you MUST follow:
+1. Answer ONLY from the provided context. Never make up information.
+2. For EVERY fact, cite the document name, page number, and section.
+   Format: (Document: name, Page X, Section Name)
+3. When comparing across documents, clearly organize by document.
+4. Use precise clinical/regulatory terminology as found in the source.
+5. If an abbreviation is used, spell it out on first use.
+6. If some documents don't contain relevant information, say so for those
+   specific documents rather than giving a generic warning.
+7. Present all information found in the context completely.
+
+After your answer, suggest 2-3 follow-up questions.
+Format them exactly like this:
+
+FOLLOW_UP_QUESTIONS:
+1. [question]
+2. [question]
+3. [question]
+"""
+
+
+# ──────────────────────────────────────────────
+# HELPER: Parse follow-up questions from response
+# ──────────────────────────────────────────────
+
+def parse_follow_ups(full_answer):
+    """
+    Split Claude's response into the answer and follow-up questions.
+    Returns (answer_text, list_of_follow_ups)
+    """
+    follow_ups = []
+    answer_text = full_answer
+
+    if "FOLLOW_UP_QUESTIONS:" in full_answer:
+        parts = full_answer.split("FOLLOW_UP_QUESTIONS:")
+        answer_text = parts[0].strip()
+        follow_up_text = parts[1].strip()
+
+        for line in follow_up_text.split("\n"):
+            line = line.strip()
+            match = re.match(r'^\d+\.\s*(.+)', line)
+            if match:
+                follow_ups.append(match.group(1).strip())
+
+    return answer_text, follow_ups[:3]
+
+
+# ──────────────────────────────────────────────
+# HELPER: Calculate confidence
+# ──────────────────────────────────────────────
+
+def get_confidence(num_results):
+    if num_results >= 4:
+        return "high"
+    elif num_results >= 2:
+        return "medium"
+    else:
+        return "low"
+
+
+# ──────────────────────────────────────────────
+# SINGLE DOCUMENT QUERY
+# ──────────────────────────────────────────────
 
 def query_documents(question, collection_name="cliniq_docs", top_k=10, score_threshold=1.5):
     """
-    Query the vector store and get an AI-powered answer with follow-ups.
+    Query a single document collection and get an AI-powered answer.
+
+    Args:
+        question: The user's question in plain English
+        collection_name: Which ChromaDB collection to search
+        top_k: Number of chunks to retrieve
+        score_threshold: Max distance score to accept (lower = more relevant)
     """
 
-    vectorstore = Chroma(
-        collection_name=collection_name,
-        embedding_function=embeddings,
-        persist_directory="./chroma_db"
-    )
-
-    results = vectorstore.similarity_search_with_score(question, k=top_k)
-
-    filtered_results = [
-        (doc, score) for doc, score in results
-        if score <= score_threshold
-    ]
-
-    if not filtered_results:
+    try:
+        vectorstore = Chroma(
+            collection_name=collection_name,
+            embedding_function=embeddings,
+            persist_directory="./chroma_db"
+        )
+    except Exception as e:
         return {
-            "answer": "I couldn't find relevant information in the uploaded documents to answer this question. Try rephrasing or check if the right document has been uploaded.",
+            "answer": f"Error loading document collection '{collection_name}'. It may be corrupted. Try re-uploading the document.",
             "pages_cited": [],
             "sections_cited": [],
             "chunks_used": 0,
@@ -78,7 +153,36 @@ def query_documents(question, collection_name="cliniq_docs", top_k=10, score_thr
             "follow_up_questions": []
         }
 
-    # Build context
+    # Find relevant chunks with similarity scores
+    try:
+        results = vectorstore.similarity_search_with_score(question, k=top_k)
+    except Exception as e:
+        return {
+            "answer": f"Error searching document. The collection may be empty or corrupted. Try re-uploading.",
+            "pages_cited": [],
+            "sections_cited": [],
+            "chunks_used": 0,
+            "confidence": "low",
+            "follow_up_questions": []
+        }
+
+    # Filter out low-relevance chunks
+    filtered_results = [
+        (doc, score) for doc, score in results
+        if score <= score_threshold
+    ]
+
+    if not filtered_results:
+        return {
+            "answer": "I couldn't find relevant information in the uploaded document to answer this question. Try rephrasing your question or check if the right document has been uploaded.",
+            "pages_cited": [],
+            "sections_cited": [],
+            "chunks_used": 0,
+            "confidence": "low",
+            "follow_up_questions": []
+        }
+
+    # Build context with page numbers and section names
     context_parts = []
     pages_cited = set()
     sections_cited = set()
@@ -94,14 +198,7 @@ def query_documents(question, collection_name="cliniq_docs", top_k=10, score_thr
         )
 
     context = "\n\n---\n\n".join(context_parts)
-
-    # Confidence
-    if len(filtered_results) >= 4:
-        confidence = "high"
-    elif len(filtered_results) >= 2:
-        confidence = "medium"
-    else:
-        confidence = "low"
+    confidence = get_confidence(len(filtered_results))
 
     # Call Claude
     llm = ChatAnthropic(
@@ -110,7 +207,7 @@ def query_documents(question, collection_name="cliniq_docs", top_k=10, score_thr
         max_tokens=2048,
     )
 
-    prompt = f"""{SYSTEM_PROMPT}
+    prompt = f"""{SINGLE_DOC_PROMPT}
 
 --- DOCUMENT CONTEXT ---
 {context}
@@ -121,24 +218,7 @@ Question: {question}
 Provide a thorough answer with page and section citations, then suggest follow-up questions."""
 
     response = llm.invoke(prompt)
-    full_answer = response.content
-
-    # Parse follow-up questions from the response
-    follow_ups = []
-    answer_text = full_answer
-
-    if "FOLLOW_UP_QUESTIONS:" in full_answer:
-        parts = full_answer.split("FOLLOW_UP_QUESTIONS:")
-        answer_text = parts[0].strip()
-        follow_up_text = parts[1].strip()
-
-        # Extract numbered questions
-        for line in follow_up_text.split("\n"):
-            line = line.strip()
-            # Match lines like "1. What is..." or "2. How does..."
-            match = re.match(r'^\d+\.\s*(.+)', line)
-            if match:
-                follow_ups.append(match.group(1).strip())
+    answer_text, follow_ups = parse_follow_ups(response.content)
 
     return {
         "answer": answer_text,
@@ -146,39 +226,34 @@ Provide a thorough answer with page and section citations, then suggest follow-u
         "sections_cited": sorted(sections_cited),
         "chunks_used": len(filtered_results),
         "confidence": confidence,
-        "follow_up_questions": follow_ups[:3]  # Max 3
+        "follow_up_questions": follow_ups
     }
 
 
-if __name__ == "__main__":
-    test_questions = [
-        "What is the primary endpoint of this study?",
-        "What are the inclusion criteria?",
-        "What is the study drug and how is it administered?",
-    ]
+# ──────────────────────────────────────────────
+# CROSS-DOCUMENT QUERY (ALL DOCUMENTS)
+# ──────────────────────────────────────────────
 
-    for question in test_questions:
-        print(f"\n{'='*60}")
-        print(f"Q: {question}")
-        print(f"{'='*60}")
-
-        result = query_documents(question)
-
-        print(f"\nAnswer:\n{result['answer']}")
-        print(f"\nPages cited: {result['pages_cited']}")
-        print(f"Sections: {result['sections_cited']}")
-        print(f"Confidence: {result['confidence']}")
-
-        if result["follow_up_questions"]:
-            print(f"\nSuggested follow-ups:")
-            for i, q in enumerate(result["follow_up_questions"], 1):
-                print(f"  {i}. {q}")
-def query_all_documents(question, top_k=10, score_threshold=1.5):
-    """Query across ALL uploaded documents and synthesize."""
+def query_all_documents(question, top_k=20, score_threshold=1.5):
+    """
+    Query across ALL uploaded documents and synthesize an answer.
+    Each document gets up to 5 chunks, then the best ones are selected.
+    """
     import chromadb
 
-    client = chromadb.PersistentClient(path="./chroma_db")
-    collections = client.list_collections()
+    try:
+        client = chromadb.PersistentClient(path="./chroma_db")
+        collections = client.list_collections()
+    except Exception:
+        return {
+            "answer": "Error accessing the document database.",
+            "pages_cited": [],
+            "sections_cited": [],
+            "chunks_used": 0,
+            "confidence": "low",
+            "follow_up_questions": [],
+            "documents_searched": []
+        }
 
     if not collections:
         return {
@@ -196,25 +271,39 @@ def query_all_documents(question, top_k=10, score_threshold=1.5):
     docs_searched = []
 
     for collection in collections:
-        vectorstore = Chroma(
-            collection_name=collection.name,
-            embedding_function=embeddings,
-            persist_directory="./chroma_db"
-        )
-        results = vectorstore.similarity_search_with_score(question, k=top_k // len(collections) + 1)
-        for doc, score in results:
-            if score <= score_threshold:
-                doc.metadata["source_collection"] = collection.name
-                all_results.append((doc, score))
-        docs_searched.append(collection.name)
+        try:
+            # Skip empty collections
+            if collection.count() == 0:
+                print(f"Skipping empty collection: {collection.name}")
+                continue
 
-    # Sort by relevance (lower score = more relevant)
+            vectorstore = Chroma(
+                collection_name=collection.name,
+                embedding_function=embeddings,
+                persist_directory="./chroma_db"
+            )
+
+            # Get up to 5 chunks per document
+            results = vectorstore.similarity_search_with_score(question, k=5)
+
+            for doc, score in results:
+                if score <= score_threshold:
+                    doc.metadata["source_collection"] = collection.name
+                    all_results.append((doc, score))
+
+            docs_searched.append(collection.name)
+
+        except Exception as e:
+            print(f"Skipping collection {collection.name}: {e}")
+            continue
+
+    # Sort by relevance (lower score = more relevant) and take top results
     all_results.sort(key=lambda x: x[1])
     all_results = all_results[:top_k]
 
     if not all_results:
         return {
-            "answer": "I couldn't find relevant information across any uploaded documents.",
+            "answer": "I couldn't find relevant information across any uploaded documents for this question.",
             "pages_cited": [],
             "sections_cited": [],
             "chunks_used": 0,
@@ -223,7 +312,7 @@ def query_all_documents(question, top_k=10, score_threshold=1.5):
             "documents_searched": docs_searched
         }
 
-    # Build context with document source
+    # Build context with document source, page numbers, and section names
     context_parts = []
     pages_cited = set()
     sections_cited = set()
@@ -240,53 +329,27 @@ def query_all_documents(question, top_k=10, score_threshold=1.5):
         )
 
     context = "\n\n---\n\n".join(context_parts)
+    confidence = get_confidence(len(all_results))
 
-    confidence = "high" if len(all_results) >= 4 else "medium" if len(all_results) >= 2 else "low"
-
+    # Call Claude with cross-document prompt
     llm = ChatAnthropic(
         model="claude-sonnet-4-6",
         temperature=0,
-        max_tokens=2048,
+        max_tokens=4096,
     )
 
-    cross_doc_prompt = """You are ClinIQ, an expert AI assistant for clinical trial documents.
-The context below comes from MULTIPLE documents.
-For each fact, cite the document name, page number, and section.
-Format citations as: (Document: name, Page X, Section Name)
-If comparing across documents, clearly indicate which information comes from which document.
+    prompt = f"""{CROSS_DOC_PROMPT}
 
-After your answer, suggest 2-3 follow-up questions.
-Format them exactly like this:
-
-FOLLOW_UP_QUESTIONS:
-1. [question]
-2. [question]
-3. [question]
-"""
-
-    prompt = f"""{cross_doc_prompt}
-
---- DOCUMENT CONTEXT ---
+--- DOCUMENT CONTEXT (from {len(docs_searched)} documents) ---
 {context}
 --- END CONTEXT ---
 
 Question: {question}
 
-Provide a thorough answer with document and page citations."""
+Provide a thorough answer organized by document with citations, then suggest follow-up questions."""
 
     response = llm.invoke(prompt)
-    full_answer = response.content
-
-    # Parse follow-ups
-    follow_ups = []
-    answer_text = full_answer
-    if "FOLLOW_UP_QUESTIONS:" in full_answer:
-        parts = full_answer.split("FOLLOW_UP_QUESTIONS:")
-        answer_text = parts[0].strip()
-        for line in parts[1].strip().split("\n"):
-            match = re.match(r'^\d+\.\s*(.+)', line.strip())
-            if match:
-                follow_ups.append(match.group(1).strip())
+    answer_text, follow_ups = parse_follow_ups(response.content)
 
     return {
         "answer": answer_text,
@@ -294,6 +357,53 @@ Provide a thorough answer with document and page citations."""
         "sections_cited": sorted(sections_cited),
         "chunks_used": len(all_results),
         "confidence": confidence,
-        "follow_up_questions": follow_ups[:3],
+        "follow_up_questions": follow_ups,
         "documents_searched": docs_searched
     }
+
+
+# ──────────────────────────────────────────────
+# TEST IT
+# ──────────────────────────────────────────────
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("ClinIQ RAG Engine v4 - Test")
+    print("=" * 60)
+
+    # Check what collections exist
+    import chromadb
+    client = chromadb.PersistentClient(path="./chroma_db")
+    collections = client.list_collections()
+    print(f"\nFound {len(collections)} collections:")
+    for c in collections:
+        try:
+            count = c.count()
+            print(f"  {c.name}: {count} chunks")
+        except Exception as e:
+            print(f"  {c.name}: ERROR - {e}")
+
+    if not collections:
+        print("\nNo documents found. Upload some first.")
+        exit()
+
+    # Test single document query
+    first_col = collections[0].name
+    print(f"\n--- Single Document Query ({first_col}) ---")
+    result = query_documents("What is the primary endpoint?", collection_name=first_col)
+    print(f"Answer: {result['answer'][:300]}...")
+    print(f"Pages: {result['pages_cited']}")
+    print(f"Sections: {result['sections_cited']}")
+    print(f"Confidence: {result['confidence']}")
+    if result['follow_up_questions']:
+        print(f"Follow-ups: {result['follow_up_questions']}")
+
+    # Test cross-document query if multiple collections
+    if len(collections) > 1:
+        print(f"\n--- Cross-Document Query (all {len(collections)} docs) ---")
+        result = query_all_documents("What is the primary endpoint of each study?")
+        print(f"Answer: {result['answer'][:500]}...")
+        print(f"Documents searched: {result['documents_searched']}")
+        print(f"Confidence: {result['confidence']}")
+        if result['follow_up_questions']:
+            print(f"Follow-ups: {result['follow_up_questions']}")

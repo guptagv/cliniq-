@@ -11,7 +11,7 @@ Key improvements over the basic version:
 
 import re
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
 # Use free local embeddings (no API cost!)
@@ -122,7 +122,12 @@ def chunk_pages(pages, chunk_size=500, overlap=100, doc_name="unknown"):
 
         for i, chunk_text in enumerate(page_chunks):
             # Skip very short chunks (headers, page numbers, etc.)
-            if len(chunk_text.strip()) < 30:
+            if len(chunk_text.strip()) < 50:
+                continue
+            # Skip table of contents lines (mostly dots and page numbers)
+            if chunk_text.count('.') > len(chunk_text) * 0.3:
+                continue
+            if chunk_text.count('...') > 3:
                 continue
 
             # Check if THIS chunk starts a new section
