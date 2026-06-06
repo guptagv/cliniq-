@@ -1,25 +1,50 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
+import Navbar from "@/components/Navbar";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 export default function UploadPage() {
+  const { data: session, status } = useSession();
+  const router = useRouter();
+
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string>("");
-  const router = useRouter();
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+  // Redirect to landing page if not logged in
+  useEffect(() => {
+    if (status === "unauthenticated") {
+      router.push("/");
+    }
+  }, [status, router]);
+
+  // Show loading state while checking auth
+  if (status === "loading") {
+    return (
+      <main className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <p className="text-gray-400">Loading...</p>
+      </main>
+    );
+  }
+
+  // Don't render anything if not logged in (redirect is happening)
+  if (!session) return null;
 
   const validateFile = (selectedFile: File): string | null => {
     if (!selectedFile.name.toLowerCase().endsWith(".pdf")) {
       return "Only PDF files are supported. Please select a .pdf file.";
     }
     if (selectedFile.size > MAX_FILE_SIZE) {
-      return `File is too large (${(selectedFile.size / 1024 / 1024).toFixed(1)}MB). Maximum size is 10MB.`;
+      return `File is too large (${(selectedFile.size / 1024 / 1024).toFixed(
+        1
+      )}MB). Maximum size is 10MB.`;
     }
     if (selectedFile.size === 0) {
       return "This file appears to be empty. Please select a valid PDF.";
@@ -64,7 +89,8 @@ export default function UploadPage() {
       if (!response.ok) {
         const errorData = await response.json().catch(() => null);
         throw new Error(
-          errorData?.detail || `Upload failed (status ${response.status}). Please try again.`
+          errorData?.detail ||
+            `Upload failed (status ${response.status}). Please try again.`
         );
       }
 
@@ -73,7 +99,8 @@ export default function UploadPage() {
     } catch (err: any) {
       if (err.message === "Failed to fetch") {
         setError(
-          "Cannot connect to the backend server. Make sure the backend is running on " + API_URL
+          "Cannot connect to the backend server. Make sure the backend is running on " +
+            API_URL
         );
       } else {
         setError(err.message || "Something went wrong. Please try again.");
@@ -85,12 +112,7 @@ export default function UploadPage() {
 
   return (
     <main className="min-h-screen bg-gray-50">
-      <nav className="border-b bg-white px-6 py-4 flex justify-between items-center">
-        <a href="/" className="text-xl font-bold text-blue-700">ClinIQ</a>
-        <a href="/chat" className="text-sm text-blue-600 hover:underline">
-          Go to Chat
-        </a>
-      </nav>
+      <Navbar />
 
       <div className="max-w-2xl mx-auto px-6 py-16">
         <h2 className="text-3xl font-bold mb-2">Upload Document</h2>
@@ -131,8 +153,8 @@ export default function UploadPage() {
           {file && (
             <div className="mt-6">
               <p className="text-sm text-gray-600 mb-4">
-                Selected: <span className="font-medium">{file.name}</span>{" "}
-                ({(file.size / 1024 / 1024).toFixed(1)} MB)
+                Selected: <span className="font-medium">{file.name}</span> (
+                {(file.size / 1024 / 1024).toFixed(1)} MB)
               </p>
 
               <button
@@ -163,7 +185,8 @@ export default function UploadPage() {
               Document Processed Successfully!
             </h3>
             <p className="text-green-700 mb-1">
-              {result.pages} pages extracted, {result.chunks} searchable chunks created.
+              {result.pages} pages extracted, {result.chunks} searchable chunks
+              created.
             </p>
             {result.collection_name && (
               <p className="text-green-600 text-sm mb-4">
