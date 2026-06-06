@@ -15,41 +15,47 @@ export default function DashboardPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const [documents, setDocuments] = useState<DocInfo[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loadingDocs, setLoadingDocs] = useState(true);
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+  // Redirect to landing page if not logged in
   useEffect(() => {
     if (status === "unauthenticated") {
       router.push("/");
     }
   }, [status, router]);
 
+  // Fetch user's documents
   useEffect(() => {
+    if (status !== "authenticated" || !session?.user?.email) return;
+
     const fetchDocs = async () => {
-      if (!session?.user?.email) return;
       try {
         const res = await fetch(
-          `${API_URL}/documents?user_id=${session.user.email}`
+          `${API_URL}/documents?user_id=${encodeURIComponent(session.user!.email!)}`
         );
         const data = await res.json();
         setDocuments(data.documents || []);
       } catch {
         setDocuments([]);
       } finally {
-        setLoading(false);
+        setLoadingDocs(false);
       }
     };
     fetchDocs();
-  }, [session, API_URL]);
+  }, [session, status, API_URL]);
 
-  if (status === "loading" || !session) {
+  // Show loading state while checking auth
+  if (status === "loading" || status === "unauthenticated") {
     return (
       <main className="min-h-screen bg-gray-50 flex items-center justify-center">
         <p className="text-gray-400">Loading...</p>
       </main>
     );
   }
+
+  if (!session) return null;
 
   return (
     <main className="min-h-screen bg-gray-50">
@@ -62,7 +68,8 @@ export default function DashboardPage() {
               Welcome, {session.user?.name?.split(" ")[0]}
             </h2>
             <p className="text-gray-500 mt-1">
-              {documents.length} document{documents.length !== 1 ? "s" : ""} uploaded
+              {documents.length} document{documents.length !== 1 ? "s" : ""}{" "}
+              uploaded
             </p>
           </div>
           <a
@@ -73,17 +80,19 @@ export default function DashboardPage() {
           </a>
         </div>
 
-        {loading ? (
+        {loadingDocs ? (
           <p className="text-gray-400">Loading documents...</p>
         ) : documents.length === 0 ? (
           <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
-            <p className="text-gray-500 text-lg mb-4">No documents uploaded yet</p>
+            <p className="text-gray-500 text-lg mb-4">
+              No documents uploaded yet
+            </p>
             <p className="text-gray-400 mb-6">
               Upload a clinical trial protocol to get started
             </p>
             <a
               href="/upload"
-              className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition"
+              className="inline-block bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition"
             >
               Upload Your First Document
             </a>
@@ -97,14 +106,14 @@ export default function DashboardPage() {
               >
                 <div>
                   <h3 className="font-medium text-gray-900">
-                    {doc.display_name}
+                    {doc.display_name || doc.name}
                   </h3>
                   <p className="text-sm text-gray-500 mt-1">
                     {doc.chunks} searchable chunks
                   </p>
                 </div>
                 <button
-                  onClick={() => router.push(`/chat?doc=${doc.name}`)}
+                  onClick={() => router.push("/chat")}
                   className="bg-blue-50 text-blue-700 px-4 py-2 rounded-lg hover:bg-blue-100 transition text-sm"
                 >
                   Chat with this document →
